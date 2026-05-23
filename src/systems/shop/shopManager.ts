@@ -1,117 +1,272 @@
 // ============================================================
-// KT Banque - Gestionnaire boutique (Prex)
+// KT Banque - Gestionnaire boutique (MariaDB)
 // ============================================================
 
-import { ShopItem, ShopData, OperationResult } from '../../types';
-import { readJSON, writeJSON, createBackup } from '../bank/saveSystem';
-import { cache } from '../cache/cacheManager';
+import { query, execute, queryOne } from '../database/db';
+import { ShopItem, OperationResult } from '../../types';
 
-const SHOP_FILE = 'shop.json';
-const CACHE_KEY = 'shop_data';
-const CACHE_TTL = 30_000;
+type DBValue =
+  | string
+  | number
+  | boolean
+  | Date
+  | Buffer
+  | null;
 
-async function loadShop(): Promise<ShopData> {
-  const cached = cache.get<ShopData>(CACHE_KEY);
-  if (cached) return cached;
-  const data = await readJSON<ShopData>(SHOP_FILE, { items: [] });
-  cache.set(CACHE_KEY, data, CACHE_TTL);
-  return data;
+interface ShopRow {
+  id: string;
+  name: string;
+  price: number;
+  category: string;
+  description: string;
+  enabled: number;
+  stock: number;
+  created_by: string;
+  created_at: number;
+  updated_at: number | null;
+  sales_count: number;
+  total_revenue: number;
 }
 
-async function saveShop(data: ShopData): Promise<void> {
-  cache.delete(CACHE_KEY);
-  await writeJSON(SHOP_FILE, data);
+function rowToItem(row: ShopRow): ShopItem {
+  return {
+    id: row.id,
+    name: row.name,
+    price: Number(row.price),
+    category: row.category,
+    description: row.description,
+    enabled: row.enabled === 1,
+    stock: Number(row.stock),
+    createdBy: row.created_by,
+    createdAt: Number(row.created_at),
+    updatedAt: row.updated_at ? Number(row.updated_at) : undefined,
+    salesCount: Number(row.sales_count),
+    totalRevenue: Number(row.total_revenue),
+  };
 }
 
 export async function getAllItems(): Promise<ShopItem[]> {
-  return (await loadShop()).items;
+  const rows = await query<ShopRow>(
+    'SELECT * FROM shop_items ORDER BY created_at DESC'
+  );
+
+  return rows.map(rowToItem);
 }
 
 export async function getEnabledItems(): Promise<ShopItem[]> {
-  return (await loadShop()).items.filter(i => i.enabled && i.stock !== 0);
+  const rows = await query<ShopRow>(
+    'SELECT * FROM shop_items WHERE enabled = 1 AND stock != 0 ORDER BY category, name'
+  );
+
+  return rows.map(rowToItem);
 }
 
 export async function getItemById(id: string): Promise<ShopItem | null> {
-  return (await loadShop()).items.find(i => i.id === id) ?? null;
+  const row = await queryOne<ShopRow>(
+    'SELECT * FROM shop_items WHERE id = ?',
+    [id]
+  );
+
+  return row ? rowToItem(row) : null;
 }
 
 export async function getCategories(): Promise<string[]> {
-  return [...new Set((await getEnabledItems()).map(i => i.category))].sort();
+  const rows = await query<{ category: string }>(
+    'SELECT DISTINCT category FROM shop_items WHERE enabled = 1 AND stock != 0 ORDER BY category'
+  );
+
+  return rows.map(r => r.category);
 }
 
-export async function getItemsByCategory(category: string): Promise<ShopItem[]> {
-  return (await getEnabledItems()).filter(i => i.category === category);
+export async function getItemsByCategory(
+  category: string
+): Promise<ShopItem[]> {
+  const rows = await query<ShopRow>(
+    'SELECT * FROM shop_items WHERE category = ? AND enabled = 1 AND stock != 0 ORDER BY name',
+    [category]
+  );
+
+  return rows.map(rowToItem);
 }
 
 export async function createItem(
-  id: string, name: string, price: number, category: string,
-  description: string, stock: number, createdBy: string
+  id: string,
+  name: string,
+  price: number,
+  category: string,
+  description: string,
+  stock: number,
+  createdBy: string
 ): Promise<OperationResult<ShopItem>> {
-  const shop = await loadShop();
-  if (shop.items.some(i => i.id === id)) {
-    return { success: false, error: `Un article avec l'ID "${id}" existe déjà.` };
+  const existing = await getItemById(id);
+
+  if (existing) {
+    return {
+      success: false,
+      error: `Un article avec l'ID "${id}" existe déjà.`,
+    };
   }
 
-  const item: ShopItem = {
-    id, name, price, category, description,
-    enabled: true, stock, createdBy,
-    createdAt: Date.now(), salesCount: 0, totalRevenue: 0,
-  };
+  const now = Date.now();
 
-  shop.items.push(item);
-  await saveShop(shop);
-  return { success: true, data: item };
+  await execute(
+    `INSERT INTO shop_items (
+      id,
+      name,
+      price,
+      category,
+      description,
+      enabled,
+      stock,
+      created_by,
+      created_at,
+      sales_count,
+      total_revenue
+    )
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 0)`,
+    [id, name, price, category, description, stock, createdBy, now]
+  );
+
+  return {
+    success: true,
+    data: {
+      id,
+      name,
+      price,
+      category,
+      description,
+      enabled: true,
+      stock,
+      createdBy,
+      createdAt: now,
+      salesCount: 0,
+      totalRevenue: 0,
+    },
+  };
 }
 
 export async function editItem(
   id: string,
-  updates: Partial<Pick<ShopItem, 'name' | 'price' | 'category' | 'description' | 'stock'>>
+  updates: Partial<
+    Pick<ShopItem, 'name' | 'price' | 'category' | 'description' | 'stock'>
+  >
 ): Promise<OperationResult<ShopItem>> {
-  const shop = await loadShop();
-  const idx = shop.items.findIndex(i => i.id === id);
-  if (idx === -1) return { success: false, error: `Article "${id}" introuvable.` };
+  const existing = await getItemById(id);
 
-  shop.items[idx] = { ...shop.items[idx], ...updates, updatedAt: Date.now() };
-  await saveShop(shop);
-  return { success: true, data: shop.items[idx] };
-}
-
-export async function toggleItem(id: string): Promise<OperationResult<ShopItem>> {
-  const shop = await loadShop();
-  const idx = shop.items.findIndex(i => i.id === id);
-  if (idx === -1) return { success: false, error: `Article "${id}" introuvable.` };
-
-  shop.items[idx].enabled = !shop.items[idx].enabled;
-  shop.items[idx].updatedAt = Date.now();
-  await saveShop(shop);
-  return { success: true, data: shop.items[idx] };
-}
-
-export async function removeItem(id: string): Promise<OperationResult<void>> {
-  const shop = await loadShop();
-  const before = shop.items.length;
-  shop.items = shop.items.filter(i => i.id !== id);
-  if (shop.items.length === before) return { success: false, error: `Article "${id}" introuvable.` };
-
-  await createBackup(SHOP_FILE);
-  await saveShop(shop);
-  return { success: true };
-}
-
-export async function recordSale(itemId: string, price: number): Promise<void> {
-  const shop = await loadShop();
-  const idx = shop.items.findIndex(i => i.id === itemId);
-  if (idx === -1) return;
-
-  shop.items[idx].salesCount++;
-  shop.items[idx].totalRevenue += price;
-
-  if (shop.items[idx].stock > 0) {
-    shop.items[idx].stock--;
-    if (shop.items[idx].stock === 0) shop.items[idx].enabled = false;
+  if (!existing) {
+    return {
+      success: false,
+      error: `Article "${id}" introuvable.`,
+    };
   }
 
-  await saveShop(shop);
+  const fields: string[] = [];
+  const values: DBValue[] = [];
+
+  if (updates.name !== undefined) {
+    fields.push('name = ?');
+    values.push(updates.name);
+  }
+
+  if (updates.price !== undefined) {
+    fields.push('price = ?');
+    values.push(updates.price);
+  }
+
+  if (updates.category !== undefined) {
+    fields.push('category = ?');
+    values.push(updates.category);
+  }
+
+  if (updates.description !== undefined) {
+    fields.push('description = ?');
+    values.push(updates.description);
+  }
+
+  if (updates.stock !== undefined) {
+    fields.push('stock = ?');
+    values.push(updates.stock);
+  }
+
+  fields.push('updated_at = ?');
+
+  values.push(Date.now());
+  values.push(id);
+
+  await execute(
+    `UPDATE shop_items SET ${fields.join(', ')} WHERE id = ?`,
+    values
+  );
+
+  const updated = await getItemById(id);
+
+  return {
+    success: true,
+    data: updated!,
+  };
+}
+
+export async function toggleItem(
+  id: string
+): Promise<OperationResult<ShopItem>> {
+  const existing = await getItemById(id);
+
+  if (!existing) {
+    return {
+      success: false,
+      error: `Article "${id}" introuvable.`,
+    };
+  }
+
+  await execute(
+    'UPDATE shop_items SET enabled = NOT enabled, updated_at = ? WHERE id = ?',
+    [Date.now(), id]
+  );
+
+  const updated = await getItemById(id);
+
+  return {
+    success: true,
+    data: updated!,
+  };
+}
+
+export async function removeItem(
+  id: string
+): Promise<OperationResult<void>> {
+  const existing = await getItemById(id);
+
+  if (!existing) {
+    return {
+      success: false,
+      error: `Article "${id}" introuvable.`,
+    };
+  }
+
+  await execute(
+    'DELETE FROM shop_items WHERE id = ?',
+    [id]
+  );
+
+  return {
+    success: true,
+  };
+}
+
+export async function recordSale(
+  itemId: string,
+  price: number
+): Promise<void> {
+  await execute(
+    `UPDATE shop_items
+     SET sales_count   = sales_count + 1,
+         total_revenue = total_revenue + ?,
+         stock         = CASE WHEN stock > 0 THEN stock - 1 ELSE stock END,
+         enabled       = CASE WHEN stock = 1 THEN 0 ELSE enabled END,
+         updated_at    = ?
+     WHERE id = ?`,
+    [price, Date.now(), itemId]
+  );
 }
 
 export async function getSalesStats(): Promise<{
@@ -119,10 +274,20 @@ export async function getSalesStats(): Promise<{
   totalSales: number;
   topItems: ShopItem[];
 }> {
-  const items = (await loadShop()).items;
+  const [stats] = await query<{
+    total_revenue: number;
+    total_sales: number;
+  }>(
+    'SELECT SUM(total_revenue) as total_revenue, SUM(sales_count) as total_sales FROM shop_items'
+  );
+
+  const topRows = await query<ShopRow>(
+    'SELECT * FROM shop_items ORDER BY sales_count DESC LIMIT 5'
+  );
+
   return {
-    totalRevenue: items.reduce((s, i) => s + i.totalRevenue, 0),
-    totalSales: items.reduce((s, i) => s + i.salesCount, 0),
-    topItems: [...items].sort((a, b) => b.salesCount - a.salesCount).slice(0, 5),
+    totalRevenue: Number(stats?.total_revenue ?? 0),
+    totalSales: Number(stats?.total_sales ?? 0),
+    topItems: topRows.map(rowToItem),
   };
 }

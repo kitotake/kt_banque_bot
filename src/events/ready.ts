@@ -1,9 +1,10 @@
 // ============================================================
-// KT Banque - Événement ready
+// KT Banque - Événement ready (MariaDB)
 // ============================================================
 
 import { Client, ActivityType } from 'discord.js';
-import { backupAll } from '../systems/bank/saveSystem';
+import { testConnection } from '../systems/database/db';
+import { runMigrations } from '../systems/database/migrations';
 import { initLogger } from '../systems/logger/logger';
 import { initCentralBank, updateVoiceChannel } from '../systems/economy/centralBank';
 import { initNotifications } from '../systems/notifications/notificationManager';
@@ -18,31 +19,34 @@ export function registerReadyEvent(client: Client): void {
     console.log(`║  Monnaie:  Prex (1000 = 1 €)         ║`);
     console.log(`╚══════════════════════════════════════╝\n`);
 
-    // Initialiser les systèmes
+    // ── Base de données ───────────────────────────────────────
+    try {
+      await testConnection();
+      await runMigrations();
+    } catch (err) {
+      console.error('❌ Connexion MariaDB échouée — arrêt du bot:', err);
+      process.exit(1);
+    }
+
+    // ── Initialiser les systèmes ──────────────────────────────
     initLogger(client);
     initCentralBank(client);
     initNotifications(client);
 
-    // Statut de présence
+    // ── Présence ─────────────────────────────────────────────
     c.user.setPresence({
       activities: [{ name: '🏦 KT Banque RP', type: ActivityType.Watching }],
       status: 'online',
     });
 
-    // Mettre à jour le salon vocal économie
+    // ── Salon vocal économie ──────────────────────────────────
     await updateVoiceChannel().catch(err => console.warn('[Ready] Vocal update échoué:', err));
 
-    // Backup initial
-    await backupAll().catch(err => console.warn('[Ready] Backup initial échoué:', err));
-
-    // Backup toutes les heures
-    setInterval(async () => {
-      await backupAll().catch(err => console.warn('[Ready] Backup périodique échoué:', err));
-    }, 60 * 60_000);
-
-    // Mise à jour salon vocal toutes les 10 minutes (au cas où)
+    // Mise à jour salon vocal toutes les 10 minutes (sécurité)
     setInterval(async () => {
       await updateVoiceChannel().catch(() => {});
     }, 10 * 60_000);
+
+    console.log('[Ready] ✅ Bot prêt et base de données connectée.\n');
   });
 }

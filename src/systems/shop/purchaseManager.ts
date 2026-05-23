@@ -1,40 +1,43 @@
 // ============================================================
-// KT Banque - Gestionnaire des achats (Prex)
+// KT Banque - Gestionnaire des achats (MariaDB)
 // ============================================================
 
+import { execute, queryOne, query } from '../database/db';
 import { Purchase, PurchasesData, OperationResult } from '../../types';
-import { readJSON, writeJSON } from '../bank/saveSystem';
-import { cache } from '../cache/cacheManager';
 
-const PURCHASES_FILE = 'purchases.json';
-const CACHE_PREFIX = 'purchases_';
-const CACHE_TTL = 20_000;
-const pendingPurchases = new Set<string>();
+interface PurchaseRow {
+  id:             string;
+  user_id:        string;
+  item_id:        string;
+  item_name:      string;
+  price:          number;
+  transaction_id: string;
+  timestamp:      number;
+  refunded:       number;
+  refunded_by:    string | null;
+  refunded_at:    number | null;
+}
+
+function rowToPurchase(row: PurchaseRow): Purchase {
+  return {
+    id:            row.id,
+    userId:        row.user_id,
+    itemId:        row.item_id,
+    itemName:      row.item_name,
+    price:         Number(row.price),
+    transactionId: row.transaction_id,
+    timestamp:     Number(row.timestamp),
+    refunded:      row.refunded === 1,
+    refundedBy:    row.refunded_by ?? undefined,
+    refundedAt:    row.refunded_at ? Number(row.refunded_at) : undefined,
+  };
+}
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
 
-async function loadAllPurchases(): Promise<PurchasesData> {
-  return readJSON<PurchasesData>(PURCHASES_FILE, {});
-}
-
-async function loadUserPurchases(userId: string): Promise<Purchase[]> {
-  const cacheKey = `${CACHE_PREFIX}${userId}`;
-  const cached = cache.get<Purchase[]>(cacheKey);
-  if (cached) return cached;
-  const all = await loadAllPurchases();
-  const purchases = all[userId] ?? [];
-  cache.set(cacheKey, purchases, CACHE_TTL);
-  return purchases;
-}
-
-async function saveUserPurchases(userId: string, purchases: Purchase[]): Promise<void> {
-  cache.delete(`${CACHE_PREFIX}${userId}`);
-  const all = await loadAllPurchases();
-  all[userId] = purchases;
-  await writeJSON(PURCHASES_FILE, all);
-}
+const pendingPurchases = new Set<string>();
 
 export async function recordPurchase(
   userId: string, itemId: string, itemName: string,
@@ -47,54 +50,52 @@ export async function recordPurchase(
 
   pendingPurchases.add(lockKey);
   try {
-    const purchase: Purchase = {
-      id: generateId(), userId, itemId, itemName,
-      price, transactionId, timestamp: Date.now(), refunded: false,
-    };
-
-    const existing = await loadUserPurchases(userId);
-    existing.unshift(purchase);
-    await saveUserPurchases(userId, existing);
-    return { success: true, data: purchase };
+    const id  = generateId();
+    const now = Date.now();
+    await execute(
+      `INSERT INTO purchases (id, user_id, item_id, item_name, price, transaction_id, timestamp, refunded)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+      [id, userId, itemId, itemName, price, transactionId, now]
+    );
+    return { success: true, data: { id, userId, itemId, itemName, price, transactionId, timestamp: now, refunded: false } };
   } finally {
     pendingPurchases.delete(lockKey);
   }
 }
 
 export async function getPurchaseById(purchaseId: string): Promise<Purchase | null> {
-  const all = await loadAllPurchases();
-  for (const purchases of Object.values(all)) {
-    const found = purchases.find(p => p.id === purchaseId);
-    if (found) return found;
-  }
-  return null;
+  const row = await queryOne<PurchaseRow>('SELECT * FROM purchases WHERE id = ?', [purchaseId]);
+  return row ? rowToPurchase(row) : null;
 }
 
 export async function getUserPurchases(userId: string): Promise<Purchase[]> {
-  return loadUserPurchases(userId);
+  const rows = await query<PurchaseRow>(
+    'SELECT * FROM purchases WHERE user_id = ? ORDER BY timestamp DESC',
+    [userId]
+  );
+  return rows.map(rowToPurchase);
 }
 
 export async function markRefunded(
   purchaseId: string, userId: string, refundedBy: string
 ): Promise<OperationResult<Purchase>> {
-  const purchases = await loadUserPurchases(userId);
-  const idx = purchases.findIndex(p => p.id === purchaseId);
-  if (idx === -1) return { success: false, error: 'Achat introuvable.' };
-  if (purchases[idx].refunded) return { success: false, error: 'Déjà remboursé.' };
+  const purchase = await getPurchaseById(purchaseId);
+  if (!purchase)           return { success: false, error: 'Achat introuvable.' };
+  if (purchase.refunded)   return { success: false, error: 'Déjà remboursé.' };
+  if (purchase.userId !== userId) return { success: false, error: 'Achat n\'appartient pas à cet utilisateur.' };
 
-  purchases[idx].refunded = true;
-  purchases[idx].refundedBy = refundedBy;
-  purchases[idx].refundedAt = Date.now();
-
-  await saveUserPurchases(userId, purchases);
-  return { success: true, data: purchases[idx] };
+  const now = Date.now();
+  await execute(
+    'UPDATE purchases SET refunded = 1, refunded_by = ?, refunded_at = ? WHERE id = ?',
+    [refundedBy, now, purchaseId]
+  );
+  return { success: true, data: { ...purchase, refunded: true, refundedBy, refundedAt: now } };
 }
 
 export async function getRecentPurchases(limit = 20): Promise<(Purchase & { userId: string })[]> {
-  const all = await loadAllPurchases();
-  const flat: (Purchase & { userId: string })[] = [];
-  for (const [userId, purchases] of Object.entries(all)) {
-    for (const p of purchases) flat.push({ ...p, userId });
-  }
-  return flat.sort((a, b) => b.timestamp - a.timestamp).slice(0, limit);
+  const rows = await query<PurchaseRow>(
+    'SELECT * FROM purchases ORDER BY timestamp DESC LIMIT ?',
+    [limit]
+  );
+  return rows.map(r => ({ ...rowToPurchase(r), userId: r.user_id }));
 }

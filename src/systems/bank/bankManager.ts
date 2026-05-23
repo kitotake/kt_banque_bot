@@ -1,63 +1,57 @@
 // ============================================================
-// KT Banque - Gestionnaire des comptes (Prex)
+// KT Banque - Gestionnaire des comptes (MariaDB)
 // ============================================================
 
-import { BankAccount, AccountsData, OperationResult } from '../../types';
-import { readJSON, writeJSON, createBackup } from './saveSystem';
-import { cache } from '../cache/cacheManager';
+import { query, execute, queryOne } from '../database/db';
+import { BankAccount, OperationResult } from '../../types';
 
-const ACCOUNTS_FILE = 'accounts.json';
-const CACHE_KEY = 'accounts_data';
-const CACHE_TTL = 30_000;
-
-async function loadAccounts(): Promise<AccountsData> {
-  const cached = cache.get<AccountsData>(CACHE_KEY);
-  if (cached) return cached;
-  const data = await readJSON<AccountsData>(ACCOUNTS_FILE, {});
-  cache.set(CACHE_KEY, data, CACHE_TTL);
-  return data;
+interface AccountRow {
+  id: string;
+  username: string;
+  bank: number;
+  created_at: number;
 }
 
-async function saveAccounts(data: AccountsData): Promise<void> {
-  cache.delete(CACHE_KEY);
-  await writeJSON(ACCOUNTS_FILE, data);
+function rowToAccount(row: AccountRow): BankAccount {
+  return {
+    id:        row.id,
+    username:  row.username,
+    bank:      Number(row.bank),
+    createdAt: Number(row.created_at),
+  };
 }
 
 export async function getOrCreateAccount(userId: string, username: string): Promise<BankAccount> {
-  const accounts = await loadAccounts();
-
-  if (!accounts[userId]) {
-    const newAccount: BankAccount = {
-      id: userId,
-      bank: 0,           // 0 Prex par défaut
-      createdAt: Date.now(),
-      username,
-    };
-    accounts[userId] = newAccount;
-    await saveAccounts(accounts);
-    console.log(`[BankManager] Nouveau compte: ${username} (${userId})`);
-  } else if (accounts[userId].username !== username) {
-    accounts[userId].username = username;
-    await saveAccounts(accounts);
-  }
-
-  return accounts[userId];
+  await execute(
+    `INSERT INTO accounts (id, username, bank, created_at)
+     VALUES (?, ?, 0, ?)
+     ON DUPLICATE KEY UPDATE username = VALUES(username)`,
+    [userId, username, Date.now()]
+  );
+  const row = await queryOne<AccountRow>(
+    'SELECT * FROM accounts WHERE id = ?', [userId]
+  );
+  return rowToAccount(row!);
 }
 
 export async function getAccount(userId: string): Promise<BankAccount | null> {
-  const accounts = await loadAccounts();
-  return accounts[userId] ?? null;
+  const row = await queryOne<AccountRow>(
+    'SELECT * FROM accounts WHERE id = ?', [userId]
+  );
+  return row ? rowToAccount(row) : null;
 }
 
 export async function updateBalance(userId: string, newBalance: number): Promise<OperationResult<BankAccount>> {
   if (newBalance < 0) return { success: false, error: 'Le solde ne peut pas être négatif.' };
 
-  const accounts = await loadAccounts();
-  if (!accounts[userId]) return { success: false, error: 'Compte introuvable.' };
+  await execute(
+    'UPDATE accounts SET bank = ? WHERE id = ?',
+    [Math.round(newBalance), userId]
+  );
 
-  accounts[userId].bank = Math.round(newBalance);
-  await saveAccounts(accounts);
-  return { success: true, data: accounts[userId] };
+  const row = await queryOne<AccountRow>('SELECT * FROM accounts WHERE id = ?', [userId]);
+  if (!row) return { success: false, error: 'Compte introuvable.' };
+  return { success: true, data: rowToAccount(row) };
 }
 
 export async function hasSufficientFunds(userId: string, amount: number): Promise<boolean> {
@@ -66,18 +60,24 @@ export async function hasSufficientFunds(userId: string, amount: number): Promis
 }
 
 export async function resetAccount(userId: string, username: string): Promise<OperationResult<BankAccount>> {
-  const accounts = await loadAccounts();
-  if (!accounts[userId]) return { success: false, error: 'Compte introuvable.' };
+  const existing = await getAccount(userId);
+  if (!existing) return { success: false, error: 'Compte introuvable.' };
 
-  await createBackup(ACCOUNTS_FILE);
-  accounts[userId].bank = 0;
-  await saveAccounts(accounts);
-  return { success: true, data: accounts[userId] };
+  await execute('UPDATE accounts SET bank = 0 WHERE id = ?', [userId]);
+  return { success: true, data: { ...existing, bank: 0 } };
 }
 
 export async function getAllAccounts(): Promise<BankAccount[]> {
-  const accounts = await loadAccounts();
-  return Object.values(accounts);
+  const rows = await query<AccountRow>('SELECT * FROM accounts');
+  return rows.map(rowToAccount);
+}
+
+export async function getTopAccounts(limit = 10): Promise<BankAccount[]> {
+  const rows = await query<AccountRow>(
+    'SELECT * FROM accounts WHERE bank > 0 ORDER BY bank DESC LIMIT ?',
+    [limit]
+  );
+  return rows.map(rowToAccount);
 }
 
 export async function getEconomyStats(): Promise<{
@@ -86,16 +86,17 @@ export async function getEconomyStats(): Promise<{
   averageBalance: number;
   richestUser: BankAccount | null;
 }> {
-  const accounts = await getAllAccounts();
-  if (accounts.length === 0) return { totalAccounts: 0, totalMoney: 0, averageBalance: 0, richestUser: null };
-
-  const totalMoney = accounts.reduce((sum, acc) => sum + acc.bank, 0);
-  const richestUser = accounts.reduce((max, acc) => (acc.bank > max.bank ? acc : max));
+  const [stats] = await query<{ total: number; total_money: number; avg_balance: number }>(
+    'SELECT COUNT(*) as total, SUM(bank) as total_money, AVG(bank) as avg_balance FROM accounts'
+  );
+  const richest = await queryOne<AccountRow>(
+    'SELECT * FROM accounts ORDER BY bank DESC LIMIT 1'
+  );
 
   return {
-    totalAccounts: accounts.length,
-    totalMoney,
-    averageBalance: Math.floor(totalMoney / accounts.length),
-    richestUser,
+    totalAccounts:  Number(stats.total),
+    totalMoney:     Number(stats.total_money ?? 0),
+    averageBalance: Math.floor(Number(stats.avg_balance ?? 0)),
+    richestUser:    richest ? rowToAccount(richest) : null,
   };
 }
