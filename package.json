@@ -8,6 +8,8 @@
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
     "deploy": "ts-node src/deploy-commands.ts",
+      "deploy:build": "npm run build && npm run deploy",
+  "deploy:run": "npm run deploy && npm run start",
     "lint": "eslint src/**/*.ts"
   },
   "dependencies": {

@@ -1,5 +1,6 @@
 // ============================================================
 // KT Banque - Types & Interfaces TypeScript
+// Monnaie : Prex (1000 Prex = 1 €)
 // ============================================================
 
 import { SlashCommandBuilder, ChatInputCommandInteraction, Client, Collection } from 'discord.js';
@@ -7,69 +8,87 @@ import { SlashCommandBuilder, ChatInputCommandInteraction, Client, Collection } 
 // ─── Compte Bancaire ────────────────────────────────────────
 export interface BankAccount {
   id: string;           // Discord User ID
-  bank: number;         // Solde bancaire en cents (pour éviter les flottants)
+  bank: number;         // Solde en Prex (entier)
   createdAt: number;    // Timestamp de création
-  username: string;     // Username Discord au moment de la création
+  username: string;     // Username Discord
 }
 
 // ─── Transaction ────────────────────────────────────────────
 export type TransactionType =
-  | 'ADD'           // Ajout d'argent par admin
-  | 'REMOVE'        // Retrait d'argent par admin
-  | 'TRANSFER_IN'   // Virement reçu
-  | 'TRANSFER_OUT'  // Virement envoyé
-  | 'PURCHASE'      // Achat boutique
-  | 'REFUND'        // Remboursement
-  | 'RESET'         // Reset de compte
-  | 'ACCOUNT_CREATED'; // Création de compte
+  | 'ADD'
+  | 'REMOVE'
+  | 'TRANSFER_IN'
+  | 'TRANSFER_OUT'
+  | 'PURCHASE'
+  | 'REFUND'
+  | 'RESET'
+  | 'ACCOUNT_CREATED';
 
 export interface Transaction {
-  id: string;               // UUID unique
-  userId: string;           // Discord User ID concerné
-  type: TransactionType;    // Type de transaction
-  amount: number;           // Montant en cents
-  balanceBefore: number;    // Solde avant transaction
-  balanceAfter: number;     // Solde après transaction
-  description: string;      // Description lisible
-  performedBy: string;      // ID de l'acteur (admin/système)
-  relatedUserId?: string;   // Pour les transferts : l'autre partie
-  itemId?: string;          // Pour les achats : ID de l'objet
-  timestamp: number;        // Timestamp UNIX
+  id: string;
+  userId: string;
+  type: TransactionType;
+  amount: number;           // En Prex
+  balanceBefore: number;    // En Prex
+  balanceAfter: number;     // En Prex
+  description: string;
+  performedBy: string;
+  relatedUserId?: string;
+  itemId?: string;
+  timestamp: number;
+}
+
+// ─── Banque Centrale ────────────────────────────────────────
+export interface CentralBank {
+  reserve: number;          // Réserve en Prex
+  lastUpdated: number;
+  voiceChannelId?: string;  // Salon vocal économie
+}
+
+// ─── Carte Bancaire RP ──────────────────────────────────────
+export type CardStatus = 'ACTIVE' | 'FROZEN' | 'CANCELLED';
+
+export interface BankCard {
+  id: string;             // Ex: "4837-1938"
+  userId: string;
+  username: string;
+  status: CardStatus;
+  createdAt: number;
+  frozenAt?: number;
 }
 
 // ─── Article Boutique ───────────────────────────────────────
 export interface ShopItem {
-  id: string;               // Identifiant unique (slug)
-  name: string;             // Nom affiché
-  price: number;            // Prix en cents
-  category: string;         // Catégorie
-  description: string;      // Description complète
-  enabled: boolean;         // Disponible à l'achat
-  stock: number;            // -1 = illimité, 0+ = limité
-  createdBy: string;        // Discord ID du créateur
-  createdAt: number;        // Timestamp de création
-  updatedAt?: number;       // Timestamp de dernière modification
-  salesCount: number;       // Nombre de ventes
-  totalRevenue: number;     // Revenus totaux en cents
+  id: string;
+  name: string;
+  price: number;            // En Prex
+  category: string;
+  description: string;
+  enabled: boolean;
+  stock: number;            // -1 = illimité
+  createdBy: string;
+  createdAt: number;
+  updatedAt?: number;
+  salesCount: number;
+  totalRevenue: number;     // En Prex
 }
 
-// ─── Données Boutique ───────────────────────────────────────
 export interface ShopData {
   items: ShopItem[];
 }
 
 // ─── Achat ──────────────────────────────────────────────────
 export interface Purchase {
-  id: string;               // UUID unique
-  userId: string;           // Acheteur
-  itemId: string;           // Article acheté
-  itemName: string;         // Nom au moment de l'achat
-  price: number;            // Prix payé en cents
-  transactionId: string;    // Transaction liée
-  timestamp: number;        // Timestamp
-  refunded: boolean;        // Remboursé ou non
-  refundedBy?: string;      // Admin qui a remboursé
-  refundedAt?: number;      // Timestamp remboursement
+  id: string;
+  userId: string;
+  itemId: string;
+  itemName: string;
+  price: number;            // En Prex
+  transactionId: string;
+  timestamp: number;
+  refunded: boolean;
+  refundedBy?: string;
+  refundedAt?: number;
 }
 
 // ─── Log Système ────────────────────────────────────────────
@@ -88,19 +107,24 @@ export interface SystemLog {
 
 // ─── Configuration ──────────────────────────────────────────
 export interface BotConfig {
-  startingBalance: number;
-  currency: string;
-  currencyName: string;
-  bankName: string;
-  maxTransactionAmount: number;
+  startingBalance: number;    // En Prex
+  currency: string;           // "Prex"
+  currencyName: string;       // "Prex"
+  bankName: string;           // "KT Banque"
+  prexPerEuro: number;        // 1000
+  maxTransactionAmount: number; // En Prex
   cooldowns: {
     balance: number;
     history: number;
     boutique: number;
     buy: number;
+    topbanque: number;
+    card: number;
   };
   adminRoles: string[];
   staffRoles: string[];
+  voiceChannelId?: string;    // Salon vocal économie
+  centralBankReserve: number; // En Prex
 }
 
 // ─── Stockage Global ────────────────────────────────────────
@@ -114,6 +138,10 @@ export interface TransactionsData {
 
 export interface PurchasesData {
   [userId: string]: Purchase[];
+}
+
+export interface CardsData {
+  [userId: string]: BankCard;
 }
 
 // ─── Commande Discord ───────────────────────────────────────
@@ -134,4 +162,12 @@ export interface OperationResult<T = void> {
   success: boolean;
   data?: T;
   error?: string;
+}
+
+// ─── Ranking ────────────────────────────────────────────────
+export interface RankEntry {
+  userId: string;
+  username: string;
+  balance: number; // En Prex
+  rank: number;
 }

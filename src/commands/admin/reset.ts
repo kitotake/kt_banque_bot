@@ -1,37 +1,29 @@
 // ============================================================
-// KT Banque - Commande Admin /reset
-// Réinitialiser le compte bancaire d'un utilisateur
+// KT Banque - /reset (admin) - Prex
 // ============================================================
 
 import {
-  ChatInputCommandInteraction,
-  SlashCommandBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ComponentType,
+  ChatInputCommandInteraction, SlashCommandBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
 } from 'discord.js';
 import { Command } from '../../types';
 import { requireStaff } from '../../systems/bank/security';
 import { getAccount, resetAccount } from '../../systems/bank/bankManager';
 import { logAdminAction } from '../../systems/logger/logger';
 import { successEmbed, errorEmbed, infoEmbed } from '../../utils/embeds';
-import { formatMoney } from '../../utils/format';
+import { formatPrex } from '../../utils/format';
 
 export const command: Command = {
   adminOnly: true,
   data: new SlashCommandBuilder()
     .setName('reset')
     .setDescription('🔄 [ADMIN] Réinitialiser le compte bancaire d\'un utilisateur')
-    .addUserOption(opt =>
-      opt.setName('utilisateur').setDescription('L\'utilisateur à réinitialiser').setRequired(true)
-    ) as SlashCommandBuilder,
+    .addUserOption(opt => opt.setName('utilisateur').setDescription('Utilisateur à réinitialiser').setRequired(true)) as SlashCommandBuilder,
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!(await requireStaff(interaction))) return;
 
     const target = interaction.options.getUser('utilisateur', true);
-
     if (target.bot) {
       await interaction.reply({ embeds: [errorEmbed('Erreur', 'Impossible de reset le compte d\'un bot.')], ephemeral: true });
       return;
@@ -43,14 +35,13 @@ export const command: Command = {
       const account = await getAccount(target.id);
       const currentBalance = account?.bank ?? 0;
 
-      // Double confirmation obligatoire
       const confirmEmbed = infoEmbed(
         'Confirmation requise',
-        `Vous allez **réinitialiser à 0€** le compte de <@${target.id}>.\n\n💰 Solde actuel: **${formatMoney(currentBalance)}**\n\n⚠️ Cette action est **irréversible**. Confirmez-vous ?`
+        `Vous allez **réinitialiser à 0 Prex** le compte de <@${target.id}>.\n\n💰 Solde actuel: **${formatPrex(currentBalance)}**\n\n⚠️ Cette action est **irréversible**.`
       );
 
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId('reset_confirm').setLabel('✅ Confirmer le reset').setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId('reset_confirm').setLabel('✅ Confirmer').setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId('reset_cancel').setLabel('❌ Annuler').setStyle(ButtonStyle.Secondary)
       );
 
@@ -68,7 +59,6 @@ export const command: Command = {
       }
 
       await btn.deferUpdate();
-
       const result = await resetAccount(target.id, target.username);
 
       if (!result.success) {
@@ -77,11 +67,11 @@ export const command: Command = {
       }
 
       await interaction.editReply({
-        embeds: [successEmbed('Compte réinitialisé', `Le compte de <@${target.id}> a été remis à **0€**.\n\n💰 Solde précédent: ${formatMoney(currentBalance)}`)],
+        embeds: [successEmbed('Compte réinitialisé', `Le compte de <@${target.id}> est remis à **0 Prex**.\n\n💰 Solde précédent: ${formatPrex(currentBalance)}`)],
         components: [],
       });
 
-      await logAdminAction('RESET_ACCOUNT', `Reset du compte de ${target.username} (${formatMoney(currentBalance)} → 0€)`, interaction.user.username, interaction.user.id, { targetId: target.id, previousBalance: currentBalance }).catch(console.error);
+      await logAdminAction('RESET_ACCOUNT', `Reset du compte de ${target.username} (${formatPrex(currentBalance)} → 0 Prex)`, interaction.user.username, interaction.user.id, { targetId: target.id, previousBalance: currentBalance }).catch(console.error);
     } catch (err) {
       console.error('[/reset]', err);
       await interaction.editReply({ embeds: [errorEmbed('Erreur critique', 'Reset échoué.')], components: [] });

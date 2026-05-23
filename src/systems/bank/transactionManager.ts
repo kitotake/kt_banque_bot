@@ -1,6 +1,6 @@
 // ============================================================
-// KT Banque - Gestionnaire des transactions
-// Création, lecture et gestion de l'historique complet
+// KT Banque - Gestionnaire des transactions (Prex)
+// Prex stockés en entiers — 1000 Prex = 1 €
 // ============================================================
 
 import {
@@ -8,13 +8,12 @@ import {
   TransactionsData,
   TransactionType,
   OperationResult,
-  BankAccount,
 } from '../../types';
 import { readJSON, writeJSON } from './saveSystem';
 import { updateBalance, getAccount, getOrCreateAccount } from './bankManager';
+import { adjustCentralReserve } from '../economy/centralBank';
 import { cache } from '../cache/cacheManager';
 
-// Génère un UUID sans dépendance externe
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 }
@@ -23,9 +22,6 @@ const TRANSACTIONS_FILE = 'transactions.json';
 const CACHE_PREFIX = 'tx_';
 const CACHE_TTL = 20_000;
 
-/**
- * Charge les transactions d'un utilisateur
- */
 async function loadUserTransactions(userId: string): Promise<Transaction[]> {
   const cacheKey = `${CACHE_PREFIX}${userId}`;
   const cached = cache.get<Transaction[]>(cacheKey);
@@ -37,9 +33,6 @@ async function loadUserTransactions(userId: string): Promise<Transaction[]> {
   return userTx;
 }
 
-/**
- * Sauvegarde les transactions d'un utilisateur
- */
 async function saveUserTransactions(userId: string, transactions: Transaction[]): Promise<void> {
   cache.delete(`${CACHE_PREFIX}${userId}`);
   const all = await readJSON<TransactionsData>(TRANSACTIONS_FILE, {});
@@ -47,26 +40,16 @@ async function saveUserTransactions(userId: string, transactions: Transaction[])
   await writeJSON(TRANSACTIONS_FILE, all);
 }
 
-/**
- * Enregistre une nouvelle transaction dans l'historique
- */
 async function recordTransaction(tx: Omit<Transaction, 'id'>): Promise<Transaction> {
   const transaction: Transaction = { id: generateId(), ...tx };
   const existing = await loadUserTransactions(tx.userId);
-  existing.unshift(transaction); // Plus récent en premier
-
-  // Limite l'historique à 500 entrées par utilisateur pour éviter les fichiers trop lourds
-  const trimmed = existing.slice(0, 500);
-  await saveUserTransactions(tx.userId, trimmed);
-
+  existing.unshift(transaction);
+  await saveUserTransactions(tx.userId, existing.slice(0, 500));
   return transaction;
 }
 
-// ─── Opérations bancaires principales ───────────────────────
+// ─── Opérations ──────────────────────────────────────────────
 
-/**
- * Ajoute de l'argent à un compte
- */
 export async function addMoney(
   userId: string,
   username: string,
@@ -83,23 +66,16 @@ export async function addMoney(
   const result = await updateBalance(userId, balanceAfter);
   if (!result.success) return { success: false, error: result.error };
 
+  // La banque centrale ne change pas lors d'un ajout admin
   const tx = await recordTransaction({
-    userId,
-    type: 'ADD',
-    amount,
-    balanceBefore,
-    balanceAfter,
-    description,
-    performedBy,
-    timestamp: Date.now(),
+    userId, type: 'ADD', amount,
+    balanceBefore, balanceAfter,
+    description, performedBy, timestamp: Date.now(),
   });
 
   return { success: true, data: tx };
 }
 
-/**
- * Retire de l'argent d'un compte
- */
 export async function removeMoney(
   userId: string,
   username: string,
@@ -115,7 +91,7 @@ export async function removeMoney(
   if (balanceBefore < amount) {
     return {
       success: false,
-      error: `Solde insuffisant. Solde actuel: ${formatAmount(balanceBefore)} | Demandé: ${formatAmount(amount)}`,
+      error: `Solde insuffisant. Solde: ${balanceBefore.toLocaleString('fr-FR')} Prex | Demandé: ${amount.toLocaleString('fr-FR')} Prex`,
     };
   }
 
@@ -124,31 +100,18 @@ export async function removeMoney(
   if (!result.success) return { success: false, error: result.error };
 
   const tx = await recordTransaction({
-    userId,
-    type: 'REMOVE',
-    amount,
-    balanceBefore,
-    balanceAfter,
-    description,
-    performedBy,
-    timestamp: Date.now(),
+    userId, type: 'REMOVE', amount,
+    balanceBefore, balanceAfter,
+    description, performedBy, timestamp: Date.now(),
   });
 
   return { success: true, data: tx };
 }
 
-/**
- * Transfert staff entre deux comptes
- * Retire de la source, ajoute à la destination, atomiquement
- */
 export async function transferMoney(
-  fromUserId: string,
-  fromUsername: string,
-  toUserId: string,
-  toUsername: string,
-  amount: number,
-  reason: string,
-  performedBy: string
+  fromUserId: string, fromUsername: string,
+  toUserId: string, toUsername: string,
+  amount: number, reason: string, performedBy: string
 ): Promise<OperationResult<{ txOut: Transaction; txIn: Transaction }>> {
   if (amount <= 0) return { success: false, error: 'Le montant doit être positif.' };
   if (fromUserId === toUserId) return { success: false, error: 'Source et destination identiques.' };
@@ -159,137 +122,96 @@ export async function transferMoney(
   if (fromAccount.bank < amount) {
     return {
       success: false,
-      error: `Solde insuffisant sur le compte source. Solde: ${formatAmount(fromAccount.bank)}`,
+      error: `Solde insuffisant. Solde: ${fromAccount.bank.toLocaleString('fr-FR')} Prex`,
     };
   }
 
-  // Débit source
   const fromBefore = fromAccount.bank;
   const fromAfter = fromBefore - amount;
   await updateBalance(fromUserId, fromAfter);
 
   const txOut = await recordTransaction({
-    userId: fromUserId,
-    type: 'TRANSFER_OUT',
-    amount,
-    balanceBefore: fromBefore,
-    balanceAfter: fromAfter,
+    userId: fromUserId, type: 'TRANSFER_OUT', amount,
+    balanceBefore: fromBefore, balanceAfter: fromAfter,
     description: `Virement vers ${toUsername} — ${reason}`,
-    performedBy,
-    relatedUserId: toUserId,
-    timestamp: Date.now(),
+    performedBy, relatedUserId: toUserId, timestamp: Date.now(),
   });
 
-  // Crédit destination
   const toBefore = toAccount.bank;
   const toAfter = toBefore + amount;
   await updateBalance(toUserId, toAfter);
 
   const txIn = await recordTransaction({
-    userId: toUserId,
-    type: 'TRANSFER_IN',
-    amount,
-    balanceBefore: toBefore,
-    balanceAfter: toAfter,
+    userId: toUserId, type: 'TRANSFER_IN', amount,
+    balanceBefore: toBefore, balanceAfter: toAfter,
     description: `Virement reçu de ${fromUsername} — ${reason}`,
-    performedBy,
-    relatedUserId: fromUserId,
-    timestamp: Date.now(),
+    performedBy, relatedUserId: fromUserId, timestamp: Date.now(),
   });
 
   return { success: true, data: { txOut, txIn } };
 }
 
-/**
- * Débite un achat boutique
- */
 export async function processPurchase(
-  userId: string,
-  username: string,
-  amount: number,
-  itemId: string,
-  itemName: string
+  userId: string, username: string,
+  amount: number, itemId: string, itemName: string
 ): Promise<OperationResult<Transaction>> {
   const account = await getOrCreateAccount(userId, username);
 
   if (account.bank < amount) {
     return {
       success: false,
-      error: `Solde insuffisant. Solde: ${formatAmount(account.bank)} | Prix: ${formatAmount(amount)}`,
+      error: `Solde insuffisant. Solde: ${account.bank.toLocaleString('fr-FR')} Prex | Prix: ${amount.toLocaleString('fr-FR')} Prex`,
     };
   }
 
   const balanceBefore = account.bank;
   const balanceAfter = balanceBefore - amount;
-
   await updateBalance(userId, balanceAfter);
 
+  // Mise à jour banque centrale : retrait boutique réduit la réserve
+  await adjustCentralReserve(-amount).catch(console.warn);
+
   const tx = await recordTransaction({
-    userId,
-    type: 'PURCHASE',
-    amount,
-    balanceBefore,
-    balanceAfter,
+    userId, type: 'PURCHASE', amount,
+    balanceBefore, balanceAfter,
     description: `Achat: ${itemName}`,
-    performedBy: userId,
-    itemId,
-    timestamp: Date.now(),
+    performedBy: userId, itemId, timestamp: Date.now(),
   });
 
   return { success: true, data: tx };
 }
 
-/**
- * Rembourse un achat (re-crédite)
- */
 export async function processRefund(
-  userId: string,
-  username: string,
-  amount: number,
-  itemName: string,
-  performedBy: string,
-  originalTxId: string
+  userId: string, username: string,
+  amount: number, itemName: string,
+  performedBy: string, originalTxId: string
 ): Promise<OperationResult<Transaction>> {
   const account = await getOrCreateAccount(userId, username);
   const balanceBefore = account.bank;
   const balanceAfter = balanceBefore + amount;
-
   await updateBalance(userId, balanceAfter);
 
+  // Remboursement : recrédite la réserve centrale
+  await adjustCentralReserve(amount).catch(console.warn);
+
   const tx = await recordTransaction({
-    userId,
-    type: 'REFUND',
-    amount,
-    balanceBefore,
-    balanceAfter,
+    userId, type: 'REFUND', amount,
+    balanceBefore, balanceAfter,
     description: `Remboursement: ${itemName} (tx: ${originalTxId})`,
-    performedBy,
-    timestamp: Date.now(),
+    performedBy, timestamp: Date.now(),
   });
 
   return { success: true, data: tx };
 }
 
-/**
- * Récupère l'historique paginé d'un utilisateur
- */
 export async function getUserHistory(
   userId: string,
-  page: number = 1,
-  pageSize: number = 10
+  page = 1,
+  pageSize = 10
 ): Promise<{ transactions: Transaction[]; total: number; pages: number }> {
   const all = await loadUserTransactions(userId);
   const total = all.length;
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const start = (page - 1) * pageSize;
-  const transactions = all.slice(start, start + pageSize);
-
-  return { transactions, total, pages };
-}
-
-/**
- * Formate un montant en euros (interne)
- */
-function formatAmount(cents: number): string {
-  return `${(cents / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2 })}€`;
+  return { transactions: all.slice(start, start + pageSize), total, pages };
 }

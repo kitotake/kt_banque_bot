@@ -1,15 +1,10 @@
 // ============================================================
-// KT Banque - Commande /history
-// Historique bancaire paginé de l'utilisateur
+// KT Banque - /history (Prex)
 // ============================================================
 
 import {
-  ChatInputCommandInteraction,
-  SlashCommandBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ComponentType,
+  ChatInputCommandInteraction, SlashCommandBuilder,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType,
 } from 'discord.js';
 import { Command } from '../../types';
 import { getOrCreateAccount } from '../../systems/bank/bankManager';
@@ -21,7 +16,7 @@ import { transactionEmoji, transactionLabel } from '../../utils/format';
 export const command: Command = {
   data: new SlashCommandBuilder()
     .setName('history')
-    .setDescription('📋 Consulter votre historique de transactions bancaires'),
+    .setDescription('📋 Consulter votre historique de transactions'),
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     const cooldown = checkCooldown(interaction.user.id, 'history', 5);
@@ -39,11 +34,7 @@ export const command: Command = {
       const PAGE_SIZE = 8;
 
       const buildEmbed = async (p: number) => {
-        const { transactions, total, pages } = await getUserHistory(
-          interaction.user.id,
-          p,
-          PAGE_SIZE
-        );
+        const { transactions, total, pages } = await getUserHistory(interaction.user.id, p, PAGE_SIZE);
 
         const mapped = transactions.map(tx => ({
           type: tx.type,
@@ -66,24 +57,13 @@ export const command: Command = {
         };
       };
 
-      const buildButtons = (currentPage: number, totalPages: number) => {
-        const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-          new ButtonBuilder()
-            .setCustomId('hist_prev')
-            .setLabel('◀ Précédent')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(currentPage <= 1),
-          new ButtonBuilder()
-            .setCustomId('hist_next')
-            .setLabel('Suivant ▶')
-            .setStyle(ButtonStyle.Secondary)
-            .setDisabled(currentPage >= totalPages)
+      const buildButtons = (p: number, totalPages: number) =>
+        new ActionRowBuilder<ButtonBuilder>().addComponents(
+          new ButtonBuilder().setCustomId('hist_prev').setLabel('◀ Précédent').setStyle(ButtonStyle.Secondary).setDisabled(p <= 1),
+          new ButtonBuilder().setCustomId('hist_next').setLabel('Suivant ▶').setStyle(ButtonStyle.Secondary).setDisabled(p >= totalPages)
         );
-        return row;
-      };
 
       const { embed, pages } = await buildEmbed(page);
-
       const response = await interaction.editReply({
         embeds: [embed],
         components: pages > 1 ? [buildButtons(page, pages)] : [],
@@ -91,7 +71,6 @@ export const command: Command = {
 
       if (pages <= 1) return;
 
-      // Collector pour la pagination (60 secondes)
       const collector = response.createMessageComponentCollector({
         componentType: ComponentType.Button,
         time: 60_000,
@@ -103,10 +82,7 @@ export const command: Command = {
         if (i.customId === 'hist_next') page = Math.min(pages, page + 1);
 
         const { embed: newEmbed, pages: newPages } = await buildEmbed(page);
-        await i.update({
-          embeds: [newEmbed],
-          components: [buildButtons(page, newPages)],
-        });
+        await i.update({ embeds: [newEmbed], components: [buildButtons(page, newPages)] });
       });
 
       collector.on('end', async () => {
@@ -114,9 +90,7 @@ export const command: Command = {
       });
     } catch (err) {
       console.error('[/history]', err);
-      await interaction.editReply({
-        embeds: [errorEmbed('Erreur', 'Impossible de charger votre historique.')],
-      });
+      await interaction.editReply({ embeds: [errorEmbed('Erreur', 'Impossible de charger votre historique.')] });
     }
   },
 };

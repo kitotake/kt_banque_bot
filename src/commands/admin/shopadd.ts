@@ -1,6 +1,5 @@
 // ============================================================
-// KT Banque - Commande Admin /shopadd
-// Ajouter un article à la boutique RP
+// KT Banque - /shopadd (admin) - Prex
 // ============================================================
 
 import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
@@ -11,7 +10,7 @@ import { logAdminAction } from '../../systems/logger/logger';
 import { successEmbed, errorEmbed, shopItemEmbed } from '../../utils/embeds';
 import { validateAndParseAmount, validateItemName, validateItemDescription, validateCategory, validateStock } from '../../utils/validators';
 import { validateItemId } from '../../systems/bank/security';
-import { formatMoney } from '../../utils/format';
+import { formatPrex } from '../../utils/format';
 
 export const command: Command = {
   adminOnly: true,
@@ -19,11 +18,11 @@ export const command: Command = {
     .setName('shopadd')
     .setDescription('🏪 [ADMIN] Ajouter un article à la boutique')
     .addStringOption(opt => opt.setName('id').setDescription('Identifiant unique (ex: netflix_premium)').setRequired(true))
-    .addStringOption(opt => opt.setName('nom').setDescription('Nom affiché de l\'article').setRequired(true))
-    .addIntegerOption(opt => opt.setName('prix').setDescription('Prix en euros').setRequired(true).setMinValue(1))
-    .addStringOption(opt => opt.setName('categorie').setDescription('Catégorie (ex: Abonnements, VIP...)').setRequired(true))
-    .addStringOption(opt => opt.setName('description').setDescription('Description complète de l\'article').setRequired(true))
-    .addIntegerOption(opt => opt.setName('stock').setDescription('Stock (-1 = illimité, 0+ = limité)').setRequired(false).setMinValue(-1)) as SlashCommandBuilder,
+    .addStringOption(opt => opt.setName('nom').setDescription('Nom affiché').setRequired(true))
+    .addIntegerOption(opt => opt.setName('prix').setDescription('Prix en Prex (ex: 50000 = 50 €)').setRequired(true).setMinValue(1))
+    .addStringOption(opt => opt.setName('categorie').setDescription('Catégorie').setRequired(true))
+    .addStringOption(opt => opt.setName('description').setDescription('Description').setRequired(true))
+    .addIntegerOption(opt => opt.setName('stock').setDescription('Stock (-1 = illimité)').setMinValue(-1)) as SlashCommandBuilder,
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!(await requireStaff(interaction))) return;
@@ -35,7 +34,6 @@ export const command: Command = {
     const description = interaction.options.getString('description', true).trim();
     const stock = interaction.options.getInteger('stock') ?? -1;
 
-    // Validations
     const idErr = validateItemId(id);
     if (idErr) { await interaction.reply({ embeds: [errorEmbed('ID invalide', idErr)], ephemeral: true }); return; }
 
@@ -57,7 +55,7 @@ export const command: Command = {
     await interaction.deferReply({ ephemeral: true });
 
     try {
-      const result = await createItem(id, name, priceCheck.cents, category, description, stock, interaction.user.id);
+      const result = await createItem(id, name, priceCheck.prex, category, description, stock, interaction.user.id);
 
       if (!result.success || !result.data) {
         await interaction.editReply({ embeds: [errorEmbed('Création échouée', result.error ?? 'Erreur.')] });
@@ -66,9 +64,8 @@ export const command: Command = {
 
       const previewEmbed = shopItemEmbed(result.data);
       previewEmbed.setTitle(`✅ Article créé — ${result.data.name}`);
-
       await interaction.editReply({ embeds: [previewEmbed] });
-      await logAdminAction('SHOP_ADD', `Nouvel article boutique: ${name} (${formatMoney(priceCheck.cents)})`, interaction.user.username, interaction.user.id, { itemId: id, price: priceCheck.cents, category }).catch(console.error);
+      await logAdminAction('SHOP_ADD', `Article créé: ${name} (${formatPrex(priceCheck.prex)})`, interaction.user.username, interaction.user.id, { itemId: id, price: priceCheck.prex, category }).catch(console.error);
     } catch (err) {
       console.error('[/shopadd]', err);
       await interaction.editReply({ embeds: [errorEmbed('Erreur critique', 'Création échouée.')] });

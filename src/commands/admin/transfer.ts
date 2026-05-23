@@ -1,6 +1,5 @@
 // ============================================================
-// KT Banque - Commande Admin /transfer
-// Virement entre deux comptes, staff uniquement
+// KT Banque - /transfer (admin) - Prex
 // ============================================================
 
 import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
@@ -8,27 +7,20 @@ import { Command } from '../../types';
 import { requireStaff } from '../../systems/bank/security';
 import { transferMoney } from '../../systems/bank/transactionManager';
 import { logTransfer } from '../../systems/logger/logger';
+import { notifyTransferSent, notifyTransferReceived } from '../../systems/notifications/notificationManager';
 import { successEmbed, errorEmbed } from '../../utils/embeds';
 import { validateAndParseAmount, validateReason } from '../../utils/validators';
-import { formatMoney } from '../../utils/format';
+import { formatPrex } from '../../utils/format';
 
 export const command: Command = {
   adminOnly: true,
   data: new SlashCommandBuilder()
     .setName('transfer')
     .setDescription('🔄 [ADMIN] Virement bancaire entre deux utilisateurs')
-    .addUserOption(opt =>
-      opt.setName('source').setDescription('Compte à débiter').setRequired(true)
-    )
-    .addUserOption(opt =>
-      opt.setName('destination').setDescription('Compte à créditer').setRequired(true)
-    )
-    .addIntegerOption(opt =>
-      opt.setName('montant').setDescription('Montant en euros').setRequired(true).setMinValue(1)
-    )
-    .addStringOption(opt =>
-      opt.setName('motif').setDescription('Motif obligatoire du virement').setRequired(true)
-    ) as SlashCommandBuilder,
+    .addUserOption(opt => opt.setName('source').setDescription('Compte à débiter').setRequired(true))
+    .addUserOption(opt => opt.setName('destination').setDescription('Compte à créditer').setRequired(true))
+    .addIntegerOption(opt => opt.setName('montant').setDescription('Montant en Prex').setRequired(true).setMinValue(1))
+    .addStringOption(opt => opt.setName('motif').setDescription('Motif du virement').setRequired(true)) as SlashCommandBuilder,
 
   async execute(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!(await requireStaff(interaction))) return;
@@ -39,7 +31,7 @@ export const command: Command = {
     const reason = interaction.options.getString('motif', true);
 
     if (fromUser.id === toUser.id) {
-      await interaction.reply({ embeds: [errorEmbed('Erreur', 'Source et destination doivent être différents.')], ephemeral: true });
+      await interaction.reply({ embeds: [errorEmbed('Erreur', 'Source et destination identiques.')], ephemeral: true });
       return;
     }
     if (fromUser.bot || toUser.bot) {
@@ -52,9 +44,9 @@ export const command: Command = {
       await interaction.reply({ embeds: [errorEmbed('Montant invalide', amountCheck.error)], ephemeral: true });
       return;
     }
-    const reasonCheck = validateReason(reason);
-    if (reasonCheck) {
-      await interaction.reply({ embeds: [errorEmbed('Motif invalide', reasonCheck)], ephemeral: true });
+    const reasonErr = validateReason(reason);
+    if (reasonErr) {
+      await interaction.reply({ embeds: [errorEmbed('Motif invalide', reasonErr)], ephemeral: true });
       return;
     }
 
@@ -64,7 +56,7 @@ export const command: Command = {
       const result = await transferMoney(
         fromUser.id, fromUser.username,
         toUser.id, toUser.username,
-        amountCheck.cents, reason, interaction.user.id
+        amountCheck.prex, reason, interaction.user.id
       );
 
       if (!result.success || !result.data) {
@@ -72,13 +64,17 @@ export const command: Command = {
         return;
       }
 
-      const { txOut } = result.data;
-      const embed = successEmbed(
-        'Virement effectué',
-        `**${formatMoney(amountCheck.cents)}** virés de <@${fromUser.id}> vers <@${toUser.id}>.\n\n📋 Motif: ${reason}\n📊 Nouveau solde source: **${formatMoney(txOut.balanceAfter)}**`
-      );
+      const { txOut, txIn } = result.data;
 
-      await interaction.editReply({ embeds: [embed] });
+      await interaction.editReply({
+        embeds: [successEmbed(
+          'Virement effectué',
+          `**${formatPrex(amountCheck.prex)}** virés de <@${fromUser.id}> vers <@${toUser.id}>.\n\n📋 Motif: ${reason}\n📊 Solde source: **${formatPrex(txOut.balanceAfter)}**`
+        )],
+      });
+
+      await notifyTransferSent(fromUser.id, amountCheck.prex, txOut.balanceAfter, toUser.username, reason).catch(() => {});
+      await notifyTransferReceived(toUser.id, amountCheck.prex, txIn.balanceAfter, fromUser.username, reason).catch(() => {});
       await logTransfer(txOut, fromUser.username, toUser.username, interaction.user.username, reason).catch(console.error);
     } catch (err) {
       console.error('[/transfer]', err);

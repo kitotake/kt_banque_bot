@@ -1,1 +1,21 @@
-[]
+[
+  {
+    "id": "1779550701192-a4f6yy3",
+    "level": "INFO",
+    "action": "SET_VOCAL",
+    "description": "Salon vocal économie configuré: 1507061781867003994",
+    "performedBy": "381023442130042880",
+    "timestamp": 1779550701192
+  },
+  {
+    "id": "1779550682643-7f9tyxa",
+    "level": "INFO",
+    "action": "BANK_INIT",
+    "description": "Banque centrale initialisée à 50 000 Prex",
+    "performedBy": "381023442130042880",
+    "metadata": {
+      "amount": 50000
+    },
+    "timestamp": 1779550682643
+  }
+]

@@ -1,15 +1,20 @@
 {
   "startingBalance": 0,
-  "currency": "€",
-  "currencyName": "Euro RP",
+  "currency": "Prex",
+  "currencyName": "Prex",
   "bankName": "KT Banque",
-  "maxTransactionAmount": 10000000,
+  "prexPerEuro": 1000,
+  "maxTransactionAmount": 999999999,
   "cooldowns": {
     "balance": 3,
     "history": 5,
     "boutique": 3,
-    "buy": 10
+    "buy": 10,
+    "topbanque": 5,
+    "card": 5
   },
   "adminRoles": [],
-  "staffRoles": []
+  "staffRoles": [],
+  "centralBankReserve": 50000,
+  "voiceChannelId": "1507061781867003994"
 }
