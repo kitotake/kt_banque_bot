@@ -1,0 +1,15 @@
+{
+  "startingBalance": 0,
+  "currency": "€",
+  "currencyName": "Euro RP",
+  "bankName": "KT Banque",
+  "maxTransactionAmount": 10000000,
+  "cooldowns": {
+    "balance": 3,
+    "history": 5,
+    "boutique": 3,
+    "buy": 10
+  },
+  "adminRoles": [],
+  "staffRoles": []
+}
